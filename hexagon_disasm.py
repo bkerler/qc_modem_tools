@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+# (c) B.Kerler 2019 under MIT license
+# If you use my code, make sure you refer to my name
+# If you want to use in a commercial product, ask me before integrating it
 import os
 import sys
 from enum import Enum

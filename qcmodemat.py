@@ -1,5 +1,10 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+# (c) B.Kerler 2019 under MIT license
+# If you use my code, make sure you refer to my name
+# If you want to use in a commercial product, ask me before integrating it
+
 # Qualcomm Modem Loader (c) B. Kerler 2019
-# Published under MIT license
 
 from PyQt5 import QtCore, QtGui, QtWidgets
 import idaapi
