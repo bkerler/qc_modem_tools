@@ -19,18 +19,24 @@ import idautils
 import ida_hexrays
 import ida_bytes
 import ida_loader
+import ida_struct
 import collections
 import logging
+from struct import unpack
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
-def search_ea(sig, segment="", callback=None):
+def search_ea(sig, segment="", callback=None, start=None, end=None):
     eas=[]
     if segment!="":
         seg = idaapi.get_segm_by_name(segment)
         if not seg:
             return
-        ea, maxea = seg.startEA, seg.endEA
+        if start==None:
+            start=seg.startEA
+        if end==None:
+            end=seg.endEA
+        ea, maxea = start, end
         count = 0
         while ea != idaapi.BADADDR:
             ea = idaapi.find_binary(ea, maxea, sig, 16, idaapi.SEARCH_DOWN)
@@ -43,8 +49,8 @@ def search_ea(sig, segment="", callback=None):
                 ea += 2
     else:
         for seg in Segments():
-            ea=SegStart(seg)
-            maxea=SegEnd(ea)
+            ea=get_segm_start(seg)
+            maxea=get_segm_end(ea)
             count = 0
             while ea != idaapi.BADADDR:
                 ea = idaapi.find_binary(ea, maxea, sig, 16, idaapi.SEARCH_DOWN)
@@ -68,17 +74,18 @@ def addr_to_bhex(ea):
     return ea[6:8]+" "+ea[4:6]+" "+ea[2:4]+" "+ea[0:2]
 
 def create_cmdref():
-    sid = ida_struct.add_struc(0, "cmd_ref")
-    idc.AddStrucMember(sid, "name", -1, offflag()|FF_DATA|FF_DWRD, -1, 4)
-    idc.AddStrucMember(sid, "id", -1, idc.FF_DWRD, -1, 4)
-    idc.AddStrucMember(sid, "id2", -1, idc.FF_DWRD, -1, 4)
-    idc.AddStrucMember(sid, "id3", -1, idc.FF_DWRD, -1, 4)
+    sid = ida_struct.add_struc(0, "cmd_ref",0)
+    idc.add_struc_member(sid, "name", -1, ida_bytes.off_flag()|ida_bytes.FF_DATA|ida_bytes.FF_DWORD, -1, 4)
+    idc.add_struc_member(sid, "reserve1", -1, ida_bytes.FF_DWORD, -1, 4)
+    idc.add_struc_member(sid, "param", -1, ida_bytes.FF_WORD, -1, 4)
+    idc.add_struc_member(sid, "id", -1, ida_bytes.FF_WORD, -1, 4)
+    idc.add_struc_member(sid, "reserve2", -1, ida_bytes.FF_DWORD, -1, 4)
     return sid
 
 def create_cmdptr():
-    sid = ida_struct.add_struc(0, "cmd_ptr")
-    idc.AddStrucMember(sid, "id", -1, idc.FF_DWRD, -1, 4)
-    idc.AddStrucMember(sid, "ptr", -1, offflag()|FF_DATA|FF_DWRD, -1, 4)
+    sid = ida_struct.add_struc(0, "cmd_ptr",0)
+    idc.add_struc_member(sid, "id", -1, ida_bytes.FF_DWORD, -1, 4)
+    idc.add_struc_member(sid, "ptr", -1, ida_bytes.off_flag()|ida_bytes.FF_DATA|ida_bytes.FF_DWORD, -1, 4)
     return sid
 
 references=[]
@@ -87,15 +94,15 @@ names=[]
 def get_string(addr):
   out = ""
   while True:
-    if Byte(addr) != 0:
-      out += chr(Byte(addr))
+    if get_wide_byte(addr) != 0:
+      out += chr(get_wide_byte(addr))
     else:
       break
     addr += 1
   return out
 
 def callback2(ea):
-    print("Found ref to cmd string at %08X" % ea)
+    print("Found ref to cmd string at 0x%08X" % ea)
     ref=ida_bytes.get_dword(ea)&0xFFFF0000
     for i in range(0,0x1000*4,0x10):
         value=ida_bytes.get_dword(ea+i)
@@ -109,70 +116,94 @@ def callback2(ea):
     return 0
 
 res=search_ea("21 4C 42 00", "", None)
-ea=res[0]
-print("\n\nFound addr to cmd AT!LB at %08X" % ea)
-val=search_ea(addr_to_bhex(ea),"",None)
+startea=res[0]
+print("\n\nFound addr to cmd AT!LB at 0x%08X" % ea)
+val=search_ea(addr_to_bhex(startea),"",None)
 ea=val[0]
 while (1):
     ea=callback2(ea)
     if ea==0:
         break
+    print(hex(ea))
     ea=search_ea(addr_to_bhex(ea),"",None)[0]
 
 create_cmdref()
-sid = idc.GetStrucIdByName("cmd_ref")
+sid = ida_struct.get_struc_id("cmd_ref")
+if sid == idaapi.BADADDR:
+    print("Structure {} does not exist".format(name))
+
 i=0
-names=[]
+lastea=0
+names={}
+firstcmdid=0
 for ea in references:
     nameptr=ida_bytes.get_dword(ea)
+    cmdid=ida_bytes.get_word(ea+0xA)
+    if firstcmdid==0:
+        firstcmdid=cmdid
     name=get_string(nameptr)
-    names.append(name)
-    idc.MakeUnknown(ea, 0x10, idc.DOUNK_DELNAMES)
-    idaapi.doStruct(ea, 0x10, sid)
-    MakeComm(ea, str(i))
+    names[cmdid]=name
+    ida_bytes.del_items(ea, ida_bytes.DELIT_DELNAMES,0x10)
+    ida_bytes.create_struct(ea, 0x10, sid)
+    print(f"EA:{hex(ea)} Name:{name} Cmdid:{hex(cmdid)}")
+    #idc.set_cmt(ea, str(i),0)
     i+=1
+    lastea=ea
 
 create_cmdptr()
-sid = idc.GetStrucIdByName("cmd_ptr")
-ea=search_ea("00 00 FC 3A 00 00","",None)[1]+2
-offsets=[]
-badoffsets={}
-x=0
-z=0
-for i in range(0,0x20000,0x8):
-    vea=ea+i
-    MakeUnkn(vea, 0x8)
-    idv=ida_bytes.get_dword(vea)
-    if idv==0x660066:
+sid = ida_struct.get_struc_id("cmd_ptr")
+ssize = ida_struct.get_struc_size(sid)
+eas=search_ea("FC 3A 00 00","",None,startea-0x3000,lastea)
+sea=None
+for ea in eas:
+    cmdid=ida_bytes.get_dword(ea+8)
+    if cmdid==0x3AFD:
+        sea=ea
         break
-    notimpladdr=ida_bytes.get_dword(vea+4)
-    if notimpladdr in offsets:
-        if not notimpladdr in badoffsets:
-            badoffsets[notimpladdr]="at_not_implemented_"+str(z)
-            z+=1
-    offsets.append(notimpladdr)
+print(f"Found cmdtable at: {hex(ea)}")
 
-tbl={}
-x=0
-for i in range(0,0x20000,0x8):
-    vea=ea+i
-    idv=ida_bytes.get_dword(vea)
-    if idv==0x660066:
-        break
-    eaaddr=ida_bytes.get_dword(vea+4)
-    idc.MakeUnknown(eaaddr, 0x8, idc.DOUNK_DELNAMES)
-    idc.MakeFunction(eaaddr)
-
-    if x<len(names):
-        if eaaddr in badoffsets:
-            name=badoffsets[eaaddr]
-        else:
-            name="atcmd_"+names[x][1:]
-            #print(info+" AT"+realname+":"+str(x))
-        idc.MakeNameEx(eaaddr, name, idc.SN_NOWARN)
-
-    info="%08X" % eaaddr
-    MakeUnkn(vea, 0x8)
-    idaapi.doStruct(vea, 0x8, sid)
-    MakeComm(vea, "AT"+names[x]+":"+str(x))
-    x+=1
+if sea!=None:
+    offsets=[]
+    badoffsets={}
+    x=0
+    z=0
+    for i in range(0,0x20000,ssize):
+        vea=ea+i
+        ida_bytes.del_items(vea, ida_bytes.DELIT_DELNAMES,ssize)
+        idv=ida_bytes.get_dword(vea)
+        if idv==0x660066:
+            break
+        notimpladdr=ida_bytes.get_dword(vea+4)
+        if notimpladdr in offsets:
+            if not notimpladdr in badoffsets:
+                badoffsets[notimpladdr]="at_not_implemented_"+str(z)
+                z+=1
+        offsets.append(notimpladdr)
+    
+    tbl={}
+    x=0
+    for i in range(0,0x20000,ssize):
+        vea=ea+i
+        idv=ida_bytes.get_dword(vea)
+        if idv==0x660066:
+            break
+        cmdid=ida_bytes.get_dword(vea)
+        eaaddr=ida_bytes.get_dword(vea+4)
+        ida_bytes.del_items(eaaddr, ida_bytes.DELIT_DELNAMES, ssize)
+        ida_funcs.add_func(eaaddr)
+        info="%08X" % eaaddr
+    
+        if x<len(names):
+            if eaaddr in badoffsets:
+                name=badoffsets[eaaddr]
+            else:
+                if cmdid in names:
+                    name="atcmd_"+names[cmdid][1:]
+                    print(info+" AT"+names[cmdid]+":"+str(x))
+                    idc.set_name(eaaddr, name, idc.SN_NOWARN)
+    
+        ida_bytes.del_items(vea, ida_bytes.DELIT_DELNAMES,ssize)
+        ida_bytes.create_struct(vea, ssize, sid)
+        if cmdid in names:
+            idc.set_cmt(vea, "AT"+names[cmdid],0)
+        x+=1
